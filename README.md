@@ -63,6 +63,23 @@ Không có secret `TS_AUTHKEY` thì job vẫn chạy và vẫn có URL Cloudflar
 - **Tự động:** cron `0 */6 * * *`, mỗi job ~350 phút → gần như liên tục, nghỉ ~10 phút giữa 2 lượt.
 - **Dừng:** Actions → run đang chạy → **Cancel workflow**. URL sẽ chết ngay.
 
+## ✅ Kết quả kiểm chứng (26/10/2026)
+
+Self-test `scripts/gsa_probe.py` gửi 1 request `GsService2 o=init` vô hại (không cần mật khẩu)
+tới Apple, dùng đúng anisette headers server trả về:
+
+| Danh tính server | Kết quả Apple | Kết luận |
+|---|---|---|
+| `upstream` (Mac) | **HTTP 503** (HTML) | ❌ bị chặn — ADI là Android nhưng khai Mac (issue #61) |
+| `windows` (`<PC> <Windows;6.2(0,0);9200> …akd…`) | **HTTP 200, ec = -20970** | ✅ qua cửa GrandSlam (ec -20970 chỉ là "tài khoản thử không tồn tại") |
+| Đối chứng: `mac-ani.jkcoxson.com` (Mac ADI thật) | HTTP 200, ec = -20970 | ✅ → IP của runner **không** phải nguyên nhân |
+
+⇒ Repo này mặc định `client_info = windows`. Nếu sau này upstream sửa được ADI thì đổi lại `upstream`.
+
+Lưu ý: bước `complete` (sau khi nhập mật khẩu) còn phụ thuộc Apple ID/thiết bị — có thể gặp
+`-36607` (quá nhiều tài khoản trên cùng machine-id) hoặc `-23782` (macOS quá cũ). Tool đã có
+logic "đốt" device-id 24h; mỗi lần job chạy mới, server sinh machine-id mới nên đỡ bị.
+
 ## `client_info` (quan trọng từ 10/2026)
 
 Apple GrandSlam bắt đầu từ 12/10/2026 trả `-80045` / `503` khi dữ liệu anisette sinh từ **Android
@@ -71,8 +88,8 @@ chọn danh tính:
 
 | `client_info` | Chuỗi gửi Apple | Ghi chú |
 |---|---|---|
-| `upstream` (mặc định) | `<MacBookPro13,2> <macOS;13.1;22C65> <com.apple.AuthKit/1 (com.apple.akd/1.0)>` | Bản gốc upstream |
-| `windows` | `<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.akd/1.0)>` | Workaround đang được cộng đồng dùng |
+| `upstream` | `<MacBookPro13,2> <macOS;13.1;22C65> <com.apple.AuthKit/1 (com.apple.akd/1.0)>` | Bản gốc upstream |
+| `windows` **(mặc định ở repo này)** | `<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.akd/1.0)>` | Workaround đang được cộng đồng dùng |
 | `windows-itunes` | `<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.iTunes/12.12.4.1)>` | Biến thể từ server Windows ADI |
 
 Nếu đăng nhập lỗi `-80045` / `503` → chạy lại workflow với `client_info = windows`, rồi trong tool

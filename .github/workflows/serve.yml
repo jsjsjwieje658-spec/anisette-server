@@ -9,15 +9,15 @@ on:
   workflow_dispatch:
     inputs:
       client_info:
-        description: "Danh tính gửi Apple (upstream = Mac, windows = <PC> Windows)"
+        description: "Danh tính gửi Apple — windows = đang chạy được, upstream(Mac) = bị 503"
         type: choice
-        options: [upstream, windows, windows-itunes]
-        default: upstream
+        options: [windows, upstream, windows-itunes]
+        default: windows
       duration_minutes:
-        description: "Thời gian chạy (phút, tối đa 350)"
-        default: "350"
+        description: "Thời gian chạy (phút, tối đa 340)"
+        default: "340"
   schedule:
-    # mỗi 6 giờ; job ~350 phút -> nghỉ ~10 phút giữa 2 lượt
+    # mỗi 6 giờ; job ~330 phút -> nghỉ ~30 phút giữa 2 lượt
     - cron: "0 */6 * * *"
   push:
     branches: [main]
@@ -42,10 +42,10 @@ jobs:
       ANISETTE_PORT: "6969"
       TS_HOSTNAME: "anisette"
       CF_TUNNEL: "1"
-      PATCH_MODE: ${{ github.event.inputs.client_info || 'upstream' }}
-      DURATION_MIN: ${{ github.event.inputs.duration_minutes || '350' }}
+      PATCH_MODE: ${{ github.event.inputs.client_info || 'windows' }}
+      DURATION_MIN: ${{ github.event.inputs.duration_minutes || '330' }}
       # tăng số này mỗi khi sửa patch/build để buộc build lại
-      BUILD_REV: "2"
+      BUILD_REV: "3"
 
     steps:
       - uses: actions/checkout@v4
@@ -172,12 +172,8 @@ jobs:
         if: ${{ always() }}
         run: |
           set -uo pipefail
-          python3 - <<'PYEOF' > /tmp/anisette/gsa.json 2>/tmp/anisette/gsa.err || true
-          import json, sys
-          sys.path.insert(0, 'scripts')
-          from gsa_probe import probe
-          print(json.dumps(probe("http://127.0.0.1:${ANISETTE_PORT}"), ensure_ascii=False))
-          PYEOF
+          python3 scripts/gsa_probe.py "http://127.0.0.1:${ANISETTE_PORT}" \
+            > /tmp/anisette/gsa.json 2>/tmp/anisette/gsa.err || true
           cat /tmp/anisette/gsa.json || true; cat /tmp/anisette/gsa.err || true
           VERDICT=$(jq -r '.verdict // "UNKNOWN"' /tmp/anisette/gsa.json 2>/dev/null || echo UNKNOWN)
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
