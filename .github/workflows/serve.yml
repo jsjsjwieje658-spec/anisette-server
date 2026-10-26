@@ -2,7 +2,7 @@ name: anisette-server
 
 # Server anisette-v3 tự host, chạy trên GitHub Actions.
 # - Build từ source (D + dub) và cache binary để các lần sau start trong vài giây.
-# - Mở 2 đường truy cập: Tailscale (nếu có secret TS_AUTHKEY) + Cloudflare quick tunnel (luôn có).
+# - Mở ra ngoài bằng Cloudflare quick tunnel (HTTPS, không cần cấu hình gì).
 # - Mỗi job chạy tối đa ~5h50m, cron 6h/lần -> gần như liên tục.
 
 on:
@@ -17,7 +17,7 @@ on:
         description: "Thời gian chạy (phút, tối đa 340)"
         default: "340"
   schedule:
-    # mỗi 6 giờ; job ~330 phút -> nghỉ ~30 phút giữa 2 lượt
+    # mỗi 6 giờ; job ~340 phút -> nghỉ ~20 phút giữa 2 lượt (URL mới mỗi lượt)
     - cron: "0 */6 * * *"
   push:
     branches: [main]
@@ -40,7 +40,6 @@ jobs:
 
     env:
       ANISETTE_PORT: "6969"
-      TS_HOSTNAME: "anisette"
       CF_TUNNEL: "1"
       PATCH_MODE: ${{ github.event.inputs.client_info || 'windows' }}
       DURATION_MIN: ${{ github.event.inputs.duration_minutes || '330' }}
@@ -185,46 +184,6 @@ jobs:
             echo "::warning::GSA trả 5xx sau $ATT lần thử — Apple edge đang chặn theo đợt (vẫn có thể đăng nhập được, tool cần retry/backoff)."
           fi
 
-      # ------------------------------------------------------------ tailscale
-      - name: Tailscale (chỉ chạy khi có secret TS_AUTHKEY)
-        if: ${{ always() }}
-        id: ts
-        env:
-          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
-        run: |
-          set -uo pipefail
-          if [ -z "${TS_AUTHKEY:-}" ]; then
-            echo "::warning::chưa có secret TS_AUTHKEY -> bỏ qua Tailscale"
-            echo "enabled=false" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          curl -fsSL https://tailscale.com/install.sh | sudo sh
-          sudo tailscale up --authkey="$TS_AUTHKEY" --hostname="$TS_HOSTNAME" \
-            --accept-dns=false ${TS_EXTRA_ARGS:-} || {
-              echo "::error::tailscale up thất bại (key hết hạn/sai tag?)"
-              echo "enabled=false" >> "$GITHUB_OUTPUT"; exit 0; }
-
-          TS_IP=$(tailscale ip -4 | head -1)
-          DNS_ANY=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
-          echo "ts_ip=$TS_IP" >> "$GITHUB_OUTPUT"
-          echo "dns_name=$DNS_ANY" >> "$GITHUB_OUTPUT"
-          echo "::notice::MagicDNS của node = $DNS_ANY (URL HTTPS sẽ là https://$DNS_ANY nếu bật HTTPS)"
-          echo "http_url=http://${TS_IP}:${ANISETTE_PORT}" >> "$GITHUB_OUTPUT"
-          echo "::notice::Tailscale IP = $TS_IP"
-
-          # Serve để có HTTPS + tên miền ổn định (BẮT BUỘC với app chặn cleartext)
-          if sudo timeout 180 tailscale serve --bg --https=443 "http://127.0.0.1:${ANISETTE_PORT}" 2>/tmp/anisette/serve.err; then
-            DNS=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
-            echo "https_url=https://${DNS}" >> "$GITHUB_OUTPUT"
-            echo "dns_name=$DNS" >> "$GITHUB_OUTPUT"
-            echo "::notice::Tailscale HTTPS = https://$DNS"
-            sudo tailscale serve status || true
-          else
-            echo "--- lỗi tailscale serve ---"; cat /tmp/anisette/serve.err || true
-            echo "::error::Không bật được tailscale serve. App Android của bạn đặt usesCleartextTraffic=false nên http://100.x KHÔNG dùng được. Vào admin console -> DNS -> bật HTTPS (và MagicDNS), rồi chạy lại."
-            echo "serve_error<<EOF" >> "$GITHUB_OUTPUT"; cat /tmp/anisette/serve.err >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
-          fi
-          echo "enabled=true" >> "$GITHUB_OUTPUT"
-
       # --------------------------------------------------------- cloudflare
       - name: Cloudflare quick tunnel (luôn bật)
         id: cf
@@ -266,9 +225,8 @@ jobs:
         if: ${{ always() }}
         run: |
           set -uo pipefail
-          TS_HTTP="${{ steps.ts.outputs.http_url }}"
-          TS_HTTPS="${{ steps.ts.outputs.https_url }}"
           CF="${{ steps.cf.outputs.cf_url }}"
+          URL="$CF"
           CI=$(cat /tmp/anisette/client_info.json 2>/dev/null || echo '{}')
 
           {
@@ -276,9 +234,8 @@ jobs:
             echo
             echo "| Đường truy cập | URL |"
             echo "|---|---|"
-            [ -n "$CF" ] && echo "| ☁️ Cloudflare (public, dùng ngay) | \`$CF\` |"
-            [ -n "$TS_HTTPS" ] && echo "| 🔒 Tailscale HTTPS | \`$TS_HTTPS\` |"
-            [ -n "$TS_HTTP" ] && echo "| 🔒 Tailscale HTTP | \`$TS_HTTP\` |"
+            [ -n "$CF" ] && echo "| ☁️ Anisette URL (Cloudflare, HTTPS) | \`$CF\` |"
+            [ -z "$CF" ] && echo "| ⚠️ | không lấy được URL cloudflared — xem log |"
             echo
             echo "**client_info:** \`$(echo "$CI" | jq -r '.client_info // "?"')\`"
             echo
@@ -292,15 +249,12 @@ jobs:
           GSA_JSON=$(cat /tmp/anisette/gsa.json 2>/dev/null || echo '{}')
           {
             echo "$CI" | jq -c \
-              --arg cf "$CF" --arg ts_https "$TS_HTTPS" --arg ts_http "$TS_HTTP" \
-              --arg run "$GITHUB_RUN_ID" --arg at "$(date -u +%FT%TZ)" \
+              --arg cf "$CF" --arg run "$GITHUB_RUN_ID" --arg at "$(date -u +%FT%TZ)" \
               --argjson gsa "${GSA_JSON:-{\}}" \
-              --arg serve_err "${{ steps.ts.outputs.serve_error }}" \
-              '{updated_at:$at, run_id:$run, cloudflare:$cf, tailscale_https:$ts_https,
-                tailscale_http:$ts_http, client_info:(.client_info // null),
+              '{updated_at:$at, run_id:$run, url:$cf, anisette_url:$cf,
+                client_info:(.client_info // null),
                 user_agent:(.user_agent // null), gsa_verdict:($gsa.verdict // "UNKNOWN"),
-                gsa_ec:($gsa.ec // null),
-                https_ok:($ts_https != ""), serve_error:$serve_err}'
+                gsa_ec:($gsa.ec // null)}'
           } > /tmp/anisette/status.json
           cat /tmp/anisette/status.json
 
@@ -308,8 +262,10 @@ jobs:
           git config user.name  "anisette-bot"
           git config user.email "anisette-bot@users.noreply.github.com"
           git checkout -q -B status 2>/dev/null || true
-          mkdir -p status && cp /tmp/anisette/status.json status/status.json
-          git add -f status/status.json
+          mkdir -p status
+          cp /tmp/anisette/status.json status/status.json
+          printf '%s\n' "$CF" > status/url.txt
+          git add -f status/status.json status/url.txt
           git commit -qm "status: $(date -u +%FT%TZ)" || true
           git push -q -f origin status || echo "::warning::push status thất bại"
 

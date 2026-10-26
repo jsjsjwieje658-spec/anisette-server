@@ -1,19 +1,20 @@
-# anisette-server (chạy trên GitHub Actions + Tailscale)
+# anisette-server (GitHub Actions + Cloudflare Tunnel)
 
-> ## 🟢 Trạng thái 26/10/2026
-> - Chạy được: build D OK, `GET /` trả **HTTP 200** với `X-Apple-I-MD-M` (ADI đã provision).
-> - Danh tính **Windows** (`<PC> <Windows;6.2(0,0);9200> …akd…`) được Apple chấp nhận:
->   self-test `GsService2 init` trả **200 / ec=-20970**. Bản `upstream` (Mac) bị **503**.
-> - Edge Apple trả **503 theo từng đợt (~50% request)** — phải retry/backoff, không phải lỗi server.
-> - ⚠️ App Android (`Sideloadtool`) đặt `android:usesCleartextTraffic="false"`
->   → URL `http://100.x` **KHÔNG dùng được**, bắt buộc **HTTPS**.
->   Cần bật HTTPS trong Tailscale admin (DNS → Enable HTTPS) để có
->   `https://anisette.<tailnet>.ts.net` **ổn định qua mọi lần chạy**.
-> - Nếu chưa bật: dùng URL Cloudflare trong `status/status.json` (đổi mỗi lần chạy).
+> ## 🟢 Trạng thái 26/10/2026 — chỉ dùng Cloudflare (đã bỏ Tailscale)
+>
+> **Lấy URL hiện tại** (mở trên điện thoại, copy dòng đầu):
+> - `https://raw.githubusercontent.com/jsjsjwieje658-spec/anisette-server/status/url.txt`
+> - hoặc `.../status/status.json` (kèm client_info + kết quả self-test GSA)
+>
+> - HTTPS sẵn → không vướng lỗi Android chặn `cleartext` (`usesCleartextTraffic=false`).
+> - Server trả `GET /` = **200** kèm `X-Apple-I-MD-M` (ADI đã provision).
+> - Danh tính **Windows** được Apple chấp nhận (self-test `GsService2 init` = 200 / ec -20970).
+> - ⚠️ URL **đổi mỗi lần workflow chạy** (~6 giờ/lần) vì Cloudflare *quick tunnel* cấp tên ngẫu nhiên.
+>   Muốn URL cố định: dùng Cloudflare **named tunnel** (cần domain + tài khoản Cloudflare) — xem cuối file.
 
 
 Server **anisette v3** tự host, build từ source mỗi khi chưa có cache, chạy trên GitHub-hosted runner,
-mở ra ngoài bằng **Tailscale** (nếu có key) và **Cloudflare quick tunnel** (luôn có).
+mở ra ngoài bằng **Cloudflare quick tunnel** (HTTPS, không cần cấu hình gì).
 
 Dùng cho tool cài IPA (`jsjsjwieje658-spec/Sideloadtool` — Android + cáp USB) hoặc SideStore/AltStore.
 
@@ -53,7 +54,7 @@ Tool này đọc `/v3/client_info` để lấy `client_info` + `user_agent`, r�
 > **Không có xung đột VPN** như SideStore: tool này giao tiếp với iPhone qua cáp USB, nên bật
 > Tailscale trên điện thoại Android **không** tranh slot VPN với gì cả.
 
-## Bật Tailscale (khuyến nghị)
+## (Đã bỏ) Tailscale
 
 1. <https://login.tailscale.com/admin/settings/keys> → **Generate auth key**
    - Reusable: **bật** (mỗi run là một node mới)
@@ -136,3 +137,21 @@ DC=ldc2 dub build -c static --build-mode allAtOnce -b release --compiler=ldc2
 XDG_RUNTIME_DIR=/tmp ./anisette-v3-server --host 127.0.0.1 --port 6969
 curl -s 127.0.0.1:6969/v3/client_info
 ```
+
+---
+
+## Muốn URL cố định? (Cloudflare named tunnel)
+
+Quick tunnel cấp tên ngẫu nhiên mỗi lần `cloudflared` khởi động. Nếu có domain trên Cloudflare:
+
+1. Cloudflare Dashboard → **Zero Trust → Networks → Tunnels → Create tunnel** → lấy `TUNNEL_TOKEN`.
+2. Trong repo này: **Settings → Secrets → Actions** → thêm `CF_TUNNEL_TOKEN`.
+3. Thêm Public Hostname: `anisette.tenmiencuaban.com` → service `http://127.0.0.1:6969`.
+4. Sửa bước Cloudflare trong `serve.yml`:
+
+```yaml
+          nohup /tmp/cloudflared tunnel --no-autoupdate run \
+            --token "${{ secrets.CF_TUNNEL_TOKEN }}" > /tmp/anisette/cf.log 2>&1 &
+```
+
+Khi đó `status/url.txt` luôn là `https://anisette.tenmiencuaban.com` — dán vào tool **một lần**, không phải đổi nữa.
