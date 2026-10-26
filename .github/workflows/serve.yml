@@ -44,6 +44,8 @@ jobs:
       CF_TUNNEL: "1"
       PATCH_MODE: ${{ github.event.inputs.client_info || 'upstream' }}
       DURATION_MIN: ${{ github.event.inputs.duration_minutes || '350' }}
+      # tăng số này mỗi khi sửa patch/build để buộc build lại
+      BUILD_REV: "2"
 
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +64,7 @@ jobs:
             $HOME/anisette-build/bin
             $HOME/.dub
             $HOME/.config/anisette-v3/lib
-          key: av3-${{ runner.os }}-${{ env.PATCH_MODE }}-${{ hashFiles('.github/workflows/serve.yml') }}-v3
+          key: av3-${{ runner.os }}-${{ env.PATCH_MODE }}-r${{ env.BUILD_REV }}
 
       - name: Cài toolchain D (ldc + dub)
         run: |
@@ -102,6 +104,10 @@ jobs:
             upstream) : ;;
           esac
           grep -n 'enum clientInfo' source/app.d
+
+          # ---- vá: upstream nuốt exception khi provisioning -> log ra để biết lỗi thật
+          python3 -c "import pathlib;p=pathlib.Path('source/app.d');s=p.read_text();a='} catch (Exception) {}';b='} catch (Exception e) { log.error(\"Provisioning FAILED at startup: \", e); }';print('PATCH OK' if a in s else 'PATCH MISS');p.write_text(s.replace(a,b,1))"
+          grep -n 'Provisioning FAILED' source/app.d || true
 
           # ---- build (static, allAtOnce) — đúng công thức trong README upstream
           export DC=ldc2
@@ -145,14 +151,20 @@ jobs:
 
           echo "--- /v3/client_info ---"; cat /tmp/anisette/client_info.json; echo
           echo "--- GET / (v1, endpoint mà tool Sideloadtool dùng) ---"
-          time curl -fsS --max-time 60 "http://127.0.0.1:${ANISETTE_PORT}/" -o /tmp/anisette/v1.json
-          head -c 600 /tmp/anisette/v1.json; echo
-          grep -q 'X-Apple-I-MD-M' /tmp/anisette/v1.json \
-            && echo "::notice::ADI provisioned OK (có X-Apple-I-MD-M)" \
-            || { echo "::error::không có X-Apple-I-MD-M"; tail -80 /tmp/anisette/server.log; exit 1; }
+          CODE=$(curl -s -o /tmp/anisette/v1.json -w '%{http_code}' --max-time 180 "http://127.0.0.1:${ANISETTE_PORT}/" || echo 000)
+          echo "HTTP $CODE"
+          head -c 2000 /tmp/anisette/v1.json; echo
+          echo "--- server.log ---"
+          cat /tmp/anisette/server.log
+          if grep -q 'X-Apple-I-MD-M' /tmp/anisette/v1.json; then
+            echo "::notice::ADI provisioned OK (có X-Apple-I-MD-M)"
+          else
+            echo "::error::v1 KHÔNG có X-Apple-I-MD-M (HTTP $CODE) — xem log ở trên"
+          fi
 
       # ------------------------------------------------------------ tailscale
       - name: Tailscale (chỉ chạy khi có secret TS_AUTHKEY)
+        if: ${{ always() }}
         id: ts
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
@@ -187,6 +199,7 @@ jobs:
       # --------------------------------------------------------- cloudflare
       - name: Cloudflare quick tunnel (luôn bật)
         id: cf
+        if: ${{ always() }}
         run: |
           set -uo pipefail
           curl -fsSL -o /tmp/cloudflared \
@@ -221,6 +234,7 @@ jobs:
 
       # -------------------------------------------------------------- report
       - name: Công bố URL
+        if: ${{ always() }}
         run: |
           set -uo pipefail
           TS_HTTP="${{ steps.ts.outputs.http_url }}"
