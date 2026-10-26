@@ -1,5 +1,17 @@
 # anisette-server (chạy trên GitHub Actions + Tailscale)
 
+> ## 🟢 Trạng thái 26/10/2026
+> - Chạy được: build D OK, `GET /` trả **HTTP 200** với `X-Apple-I-MD-M` (ADI đã provision).
+> - Danh tính **Windows** (`<PC> <Windows;6.2(0,0);9200> …akd…`) được Apple chấp nhận:
+>   self-test `GsService2 init` trả **200 / ec=-20970**. Bản `upstream` (Mac) bị **503**.
+> - Edge Apple trả **503 theo từng đợt (~50% request)** — phải retry/backoff, không phải lỗi server.
+> - ⚠️ App Android (`Sideloadtool`) đặt `android:usesCleartextTraffic="false"`
+>   → URL `http://100.x` **KHÔNG dùng được**, bắt buộc **HTTPS**.
+>   Cần bật HTTPS trong Tailscale admin (DNS → Enable HTTPS) để có
+>   `https://anisette.<tailnet>.ts.net` **ổn định qua mọi lần chạy**.
+> - Nếu chưa bật: dùng URL Cloudflare trong `status/status.json` (đổi mỗi lần chạy).
+
+
 Server **anisette v3** tự host, build từ source mỗi khi chưa có cache, chạy trên GitHub-hosted runner,
 mở ra ngoài bằng **Tailscale** (nếu có key) và **Cloudflare quick tunnel** (luôn có).
 
