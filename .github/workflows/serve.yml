@@ -167,6 +167,26 @@ jobs:
             echo "::error::v1 KHÔNG có X-Apple-I-MD-M (HTTP $CODE) — xem log ở trên"
           fi
 
+      - name: Self-test GSA (không cần mật khẩu)
+        id: gsa
+        if: ${{ always() }}
+        run: |
+          set -uo pipefail
+          python3 - <<'PYEOF' > /tmp/anisette/gsa.json 2>/tmp/anisette/gsa.err || true
+          import json, sys
+          sys.path.insert(0, 'scripts')
+          from gsa_probe import probe
+          print(json.dumps(probe("http://127.0.0.1:${ANISETTE_PORT}"), ensure_ascii=False))
+          PYEOF
+          cat /tmp/anisette/gsa.json || true; cat /tmp/anisette/gsa.err || true
+          VERDICT=$(jq -r '.verdict // "UNKNOWN"' /tmp/anisette/gsa.json 2>/dev/null || echo UNKNOWN)
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          if [ "$VERDICT" = "PASS" ]; then
+            echo "::notice::GSA chấp nhận danh tính của server (ec=$(jq -r '.ec' /tmp/anisette/gsa.json))"
+          else
+            echo "::error::GSA từ chối danh tính server -> tool sẽ không đăng nhập được (xem issue #61). Thử client_info=windows."
+          fi
+
       # ------------------------------------------------------------ tailscale
       - name: Tailscale (chỉ chạy khi có secret TS_AUTHKEY)
         if: ${{ always() }}
@@ -258,18 +278,23 @@ jobs:
             echo
             echo "**client_info:** \`$(echo "$CI" | jq -r '.client_info // "?"')\`"
             echo
+            echo "**GSA self-test:** \`$(jq -r '.verdict // "UNKNOWN"' /tmp/anisette/gsa.json 2>/dev/null || echo UNKNOWN)\` (ec=\`$(jq -r '.ec // "-"' /tmp/anisette/gsa.json 2>/dev/null || echo -)\`)"
+            echo
             echo "**user_agent:** \`$(echo "$CI" | jq -r '.user_agent // "?"')\`"
             echo
             echo "Server sẽ tắt khi job kết thúc (tối đa ~${DURATION_MIN} phút). Cron 6 giờ sẽ bật lại."
           } >> "$GITHUB_STEP_SUMMARY"
 
+          GSA_JSON=$(cat /tmp/anisette/gsa.json 2>/dev/null || echo '{}')
           {
             echo "$CI" | jq -c \
               --arg cf "$CF" --arg ts_https "$TS_HTTPS" --arg ts_http "$TS_HTTP" \
               --arg run "$GITHUB_RUN_ID" --arg at "$(date -u +%FT%TZ)" \
+              --argjson gsa "${GSA_JSON:-{\}}" \
               '{updated_at:$at, run_id:$run, cloudflare:$cf, tailscale_https:$ts_https,
                 tailscale_http:$ts_http, client_info:(.client_info // null),
-                user_agent:(.user_agent // null)}'
+                user_agent:(.user_agent // null), gsa_verdict:($gsa.verdict // "UNKNOWN"),
+                gsa_ec:($gsa.ec // null)}'
           } > /tmp/anisette/status.json
           cat /tmp/anisette/status.json
 
