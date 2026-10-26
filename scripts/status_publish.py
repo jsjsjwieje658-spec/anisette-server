@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 
-BRANCH = "status"
+BRANCH = "live"
 
 
 def git(*args, check=True):
@@ -62,12 +62,15 @@ def publish(status_path, url=None, alive=None, push=True):
     if not data.get("updated_at"):
         data["updated_at"] = now
 
-    os.makedirs("status", exist_ok=True)
-    with open(os.path.join("status", "status.json"), "w") as fh:
+    # Ghi ở GỐC repo, trên nhánh `live` → URL raw không bị nhập nhằng:
+    #   raw.githubusercontent.com/<owner>/<repo>/live/status.json
+    # (đặt ở thư mục `status/` trên nhánh `status` thì raw trả 404 vì GitHub
+    #  hiểu "status/status.json" là tên nhánh — đo được 26/10/2026)
+    with open("status.json", "w") as fh:
         json.dump(data, fh, ensure_ascii=False, indent=1)
         fh.write("\n")
     if data.get("url"):
-        with open(os.path.join("status", "url.txt"), "w") as fh:
+        with open("url.txt", "w") as fh:
             fh.write(data["url"] + "\n")
 
     if not push:
@@ -77,7 +80,7 @@ def publish(status_path, url=None, alive=None, push=True):
     git("config", "user.name", "anisette-bot")
     git("config", "user.email", "anisette-bot@users.noreply.github.com")
     git("checkout", "-q", "-B", BRANCH)
-    git("add", "-f", "status/status.json", "status/url.txt")
+    git("add", "-f", "status.json", "url.txt")
     commit = git("commit", "-qm", f"status: {now} alive={data.get('alive')}", check=False)
     if commit.returncode != 0 and "nothing to commit" not in (commit.stdout + commit.stderr):
         print(f"[status] commit: {commit.stdout.strip()} {commit.stderr.strip()[:200]}")

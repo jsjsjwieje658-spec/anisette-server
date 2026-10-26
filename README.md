@@ -10,10 +10,10 @@ Dùng cho tool cài IPA (`jsjsjwieje658-spec/Sideloadtool` — Android + cáp US
 ## 🟢 Lấy URL hiện tại
 
 ```bash
-curl -s https://raw.githubusercontent.com/jsjsjwieje658-spec/anisette-server/status/status.json | jq .
+curl -s https://raw.githubusercontent.com/jsjsjwieje658-spec/anisette-server/live/status.json | jq .
 ```
 
-`status.json` (nhánh `status`) — đọc **cả** `alive` và `expires_at`, đừng chỉ đọc `url`:
+`status.json` (nhánh `live`, file ở gốc repo) — đọc **cả** `alive` và `expires_at`, đừng chỉ đọc `url`:
 
 ```json
 {
@@ -114,7 +114,7 @@ scripts/gsa_probe.py          # phân loại PASS / IDENTITY_MISMATCH / EDGE_THR
 scripts/test_gsa_probe.py     # test phân loại (không gọi mạng) — 9 case
 scripts/start_server.sh       # start | rotate | stop + health/provision check
 scripts/status_compose.sh     # ghép status.json
-scripts/status_publish.py     # đẩy status.json + url.txt lên nhánh status
+scripts/status_publish.py     # đẩy status.json + url.txt lên nhánh live
 ```
 
 ```bash
@@ -184,7 +184,7 @@ python3 scripts/gsa_probe.py http://127.0.0.1:6969 --tries 4
 ```
 .github/workflows/serve.yml   # build → gate danh tính → tunnel → status → supervise
 scripts/                      # gsa_probe, start_server, status_compose, status_publish, test
-status/status.json            # (nhánh `status`) URL + alive + expires_at + kết quả gate
+status.json                   # (nhánh `live`) URL + alive + expires_at + kết quả gate
 ```
 
 ## Muốn URL cố định? (Cloudflare named tunnel)
@@ -199,7 +199,7 @@ nohup /tmp/cloudflared tunnel --no-autoupdate run \
   --token "${{ secrets.CF_TUNNEL_TOKEN }}" > /tmp/anisette/cf.log 2>&1 &
 ```
 
-Khi đó `status/url.txt` luôn là `https://anisette.tenmiencuaban.com` — dán vào tool **một lần**.
+Khi đó `url.txt` luôn là `https://anisette.tenmiencuaban.com` — dán vào tool **một lần**.
 
 ## (Đã bỏ) Tailscale
 
