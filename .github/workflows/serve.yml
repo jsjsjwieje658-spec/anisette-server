@@ -204,7 +204,10 @@ jobs:
               echo "enabled=false" >> "$GITHUB_OUTPUT"; exit 0; }
 
           TS_IP=$(tailscale ip -4 | head -1)
+          DNS_ANY=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
           echo "ts_ip=$TS_IP" >> "$GITHUB_OUTPUT"
+          echo "dns_name=$DNS_ANY" >> "$GITHUB_OUTPUT"
+          echo "::notice::MagicDNS của node = $DNS_ANY (URL HTTPS sẽ là https://$DNS_ANY nếu bật HTTPS)"
           echo "http_url=http://${TS_IP}:${ANISETTE_PORT}" >> "$GITHUB_OUTPUT"
           echo "::notice::Tailscale IP = $TS_IP"
 
