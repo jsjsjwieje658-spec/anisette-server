@@ -72,6 +72,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
             ca-certificates curl git jq clang libssl-dev zlib1g-dev ldc dub
+          # libplist: dependency runtime của thư viện provisioning ADI (dlopen)
+          sudo apt-get install -y -qq --no-install-recommends libplist-2.0-3 \
+            || sudo apt-get install -y -qq --no-install-recommends libplist3 \
+            || sudo apt-get install -y -qq --no-install-recommends libplist-dev
           ldc2 --version | head -3
           dub --version
 
@@ -158,6 +162,7 @@ jobs:
           cat /tmp/anisette/server.log
           if grep -q 'X-Apple-I-MD-M' /tmp/anisette/v1.json; then
             echo "::notice::ADI provisioned OK (có X-Apple-I-MD-M)"
+            jq -r 'to_entries[] | "  \(.key): \(.value)"' /tmp/anisette/v1.json 2>/dev/null || true
           else
             echo "::error::v1 KHÔNG có X-Apple-I-MD-M (HTTP $CODE) — xem log ở trên"
           fi
@@ -273,7 +278,7 @@ jobs:
           git config user.email "anisette-bot@users.noreply.github.com"
           git checkout -q -B status 2>/dev/null || true
           mkdir -p status && cp /tmp/anisette/status.json status/status.json
-          git add status/status.json
+          git add -f status/status.json
           git commit -qm "status: $(date -u +%FT%TZ)" || true
           git push -q -f origin status || echo "::warning::push status thất bại"
 
