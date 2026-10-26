@@ -52,7 +52,7 @@ env:
   DURATION_MIN: ${{ github.event.inputs.duration_minutes || '330' }}
   ROTATE_IDENTITY: ${{ github.event.inputs.rotate_identity || 'true' }}
   # tăng số này mỗi khi sửa patch/build để buộc build lại
-  BUILD_REV: "4"
+  BUILD_REV: "5"
   # vá luôn User-Agent mà thư viện Provision dùng lúc provision ADI (x86_64,
   # chuỗi gốc là akd/1.0 CFNetwork/1404.0.5 Darwin/22.3.0 = macOS 13) cho khớp
   # danh tính khai báo; đặt "0" để tắt.
@@ -117,13 +117,23 @@ jobs:
 
           # ---- danh tính client + user agent publish qua /v3/client_info
           #      (client PHẢI dùng đúng cặp này; Apple so khớp từ 12/10/2026)
+          #
+          # [v75 — 2026-10-26] UA BẮT BUỘC có thành phần `Darwin/<ver>`.
+          # Đo trên chính server này (o=init, Apple ID không tồn tại, cùng
+          # machine-id, cùng danh tính, 10 lần mỗi UA, thứ tự ngẫu nhiên):
+          #   akd/1.0 CFNetwork/808.1.4                2/10 được, 8/10 HTTP 503
+          #   akd/1.0 CFNetwork/808.1.4 Darwin/16.7.0  8/10 được, 2/10 HTTP 503
+          #   akd/1.0 CFNetwork/1408.0.4 Darwin/22.5.0 9/10 được, 1/10 HTTP 503
+          # UA cũ (808.1.4, không Darwin) là UA của Windows iTunes 12.9 nhưng
+          # lại đi kèm danh tính `akd` → edge Apple trả 503 ngẫu nhiên. Đây là
+          # nguyên nhân "cùng server, cùng danh tính, lúc được lúc không".
           case "$PATCH_MODE" in
             windows)
               CI='<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.akd/1.0)>'
-              UA='akd/1.0 CFNetwork/808.1.4' ;;
+              UA='akd/1.0 CFNetwork/1408.0.4 Darwin/22.5.0' ;;
             windows-itunes)
               CI='<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.iTunes/12.12.4.1)>'
-              UA='akd/1.0 CFNetwork/808.1.4' ;;
+              UA='akd/1.0 CFNetwork/1408.0.4 Darwin/22.5.0' ;;
             mac10.12-diagnostic)
               # ⚠️ ĐO ĐƯỢC 26/10/2026: machine-id sinh từ ADI Android + khai Mac
               # 10.12.6 → Apple trả -80045 100% (2 server, 4 lần). Chỉ dùng để đo.
@@ -131,7 +141,8 @@ jobs:
               UA='akd/1.0 CFNetwork/811.5.4 Darwin/16.7.0' ;;
             upstream)
               CI=''
-              UA='akd/1.0 CFNetwork/808.1.4' ;;
+              # giữ UA của Dadoum nhưng thêm Darwin/ (UA gốc 808.1.4 bị 503)
+              UA='akd/1.0 CFNetwork/1408.0.4 Darwin/22.5.0' ;;
             *) echo "::error::PATCH_MODE không hợp lệ: $PATCH_MODE"; exit 1 ;;
           esac
 
@@ -147,6 +158,12 @@ jobs:
           print("PATCH clientInfo ->", ci)
           PY
           fi
+
+          # UA không có Darwin/ = lỗi cấu hình (xem bảng đo ở trên)
+          case "$UA" in
+            *Darwin/*) ;;
+            *) echo "::error::UA '$UA' thiếu Darwin/ — Apple edge trả 503 8/10 lần"; exit 1 ;;
+          esac
 
           # user_agent trả ở /v3/client_info phải khớp danh tính ở trên
           python3 - "$UA" <<'PY'
