@@ -173,14 +173,16 @@ jobs:
         run: |
           set -uo pipefail
           python3 scripts/gsa_probe.py "http://127.0.0.1:${ANISETTE_PORT}" \
+            probe-nonexistent-0000@icloud.com 6 \
             > /tmp/anisette/gsa.json 2>/tmp/anisette/gsa.err || true
           cat /tmp/anisette/gsa.json || true; cat /tmp/anisette/gsa.err || true
           VERDICT=$(jq -r '.verdict // "UNKNOWN"' /tmp/anisette/gsa.json 2>/dev/null || echo UNKNOWN)
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          ATT=$(jq -r '.attempts_used // "?"' /tmp/anisette/gsa.json 2>/dev/null || echo "?")
           if [ "$VERDICT" = "PASS" ]; then
-            echo "::notice::GSA chấp nhận danh tính của server (ec=$(jq -r '.ec' /tmp/anisette/gsa.json))"
+            echo "::notice::GSA chấp nhận danh tính server (ec=$(jq -r '.ec' /tmp/anisette/gsa.json), đúng ở lần thử $ATT)"
           else
-            echo "::error::GSA từ chối danh tính server -> tool sẽ không đăng nhập được (xem issue #61). Thử client_info=windows."
+            echo "::warning::GSA trả 5xx sau $ATT lần thử — Apple edge đang chặn theo đợt (vẫn có thể đăng nhập được, tool cần retry/backoff)."
           fi
 
       # ------------------------------------------------------------ tailscale
@@ -206,14 +208,17 @@ jobs:
           echo "http_url=http://${TS_IP}:${ANISETTE_PORT}" >> "$GITHUB_OUTPUT"
           echo "::notice::Tailscale IP = $TS_IP"
 
-          # thử Serve để có HTTPS + tên miền (cần bật HTTPS trong tailnet)
-          if sudo timeout 120 tailscale serve --bg --https=443 "http://127.0.0.1:${ANISETTE_PORT}"; then
+          # Serve để có HTTPS + tên miền ổn định (BẮT BUỘC với app chặn cleartext)
+          if sudo timeout 180 tailscale serve --bg --https=443 "http://127.0.0.1:${ANISETTE_PORT}" 2>/tmp/anisette/serve.err; then
             DNS=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
             echo "https_url=https://${DNS}" >> "$GITHUB_OUTPUT"
             echo "dns_name=$DNS" >> "$GITHUB_OUTPUT"
+            echo "::notice::Tailscale HTTPS = https://$DNS"
             sudo tailscale serve status || true
           else
-            echo "::warning::tailscale serve không bật được (HTTPS chưa enable?) — dùng http://$TS_IP:6969"
+            echo "--- lỗi tailscale serve ---"; cat /tmp/anisette/serve.err || true
+            echo "::error::Không bật được tailscale serve. App Android của bạn đặt usesCleartextTraffic=false nên http://100.x KHÔNG dùng được. Vào admin console -> DNS -> bật HTTPS (và MagicDNS), rồi chạy lại."
+            echo "serve_error<<EOF" >> "$GITHUB_OUTPUT"; cat /tmp/anisette/serve.err >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
           fi
           echo "enabled=true" >> "$GITHUB_OUTPUT"
 
@@ -287,10 +292,12 @@ jobs:
               --arg cf "$CF" --arg ts_https "$TS_HTTPS" --arg ts_http "$TS_HTTP" \
               --arg run "$GITHUB_RUN_ID" --arg at "$(date -u +%FT%TZ)" \
               --argjson gsa "${GSA_JSON:-{\}}" \
+              --arg serve_err "${{ steps.ts.outputs.serve_error }}" \
               '{updated_at:$at, run_id:$run, cloudflare:$cf, tailscale_https:$ts_https,
                 tailscale_http:$ts_http, client_info:(.client_info // null),
                 user_agent:(.user_agent // null), gsa_verdict:($gsa.verdict // "UNKNOWN"),
-                gsa_ec:($gsa.ec // null)}'
+                gsa_ec:($gsa.ec // null),
+                https_ok:($ts_https != ""), serve_error:$serve_err}'
           } > /tmp/anisette/status.json
           cat /tmp/anisette/status.json
 
