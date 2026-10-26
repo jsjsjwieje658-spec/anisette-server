@@ -1,23 +1,37 @@
 name: anisette-server
 
-# Server anisette-v3 tự host, chạy trên GitHub Actions.
-# - Build từ source (D + dub) và cache binary để các lần sau start trong vài giây.
-# - Mở ra ngoài bằng Cloudflare quick tunnel (HTTPS, không cần cấu hình gì).
-# - Mỗi job chạy tối đa ~5h50m, cron 6h/lần -> gần như liên tục.
+# Server anisette-v3 tự host trên GitHub Actions, mở ra ngoài bằng Cloudflare
+# quick tunnel.
+#
+# Vì sao workflow này được viết lại (26/10/2026)
+# --------------------------------------------
+# Bản trước publish status.json đúng MỘT lần lúc bắt đầu, nên khi job bị cancel
+# hoặc cloudflared chết, status.json vẫn quảng cáo URL đã chết. Đo thực tế:
+# run 40319963400 vẫn ghi URL https://immediately-amazing-promises-exports...,
+# sau khi job cancel thì curl URL đó trả **HTTP 530** (tunnel không còn). Client
+# (Sideloadtool) đọc anisette từ URL đó, Apple trả 503 HTML, và client báo
+# "-80045: server bị Apple từ chối" — sai nguyên nhân.
+#
+# Bản này thêm: gate kiểm chứng danh tính trước khi publish, xoay danh tính khi
+# cần, heartbeat + alive=false khi job kết thúc, và publish lại khi URL đổi.
 
 on:
   workflow_dispatch:
     inputs:
       client_info:
-        description: "Danh tính gửi Apple — windows = đang chạy được, upstream(Mac) = bị 503"
+        description: "Danh tính khai với Apple (windows = dùng được; mac10.12 = chỉ để đo)"
         type: choice
-        options: [windows, upstream, windows-itunes]
+        options: [windows, windows-itunes, upstream, mac10.12-diagnostic]
         default: windows
       duration_minutes:
         description: "Thời gian chạy (phút, tối đa 340)"
         default: "340"
+      rotate_identity:
+        description: "Xoay machine-id nếu danh tính bị Apple từ chối"
+        type: choice
+        options: ["true", "false"]
+        default: "true"
   schedule:
-    # mỗi 6 giờ; job ~340 phút -> nghỉ ~20 phút giữa 2 lượt (URL mới mỗi lượt)
     - cron: "0 */6 * * *"
   push:
     branches: [main]
@@ -25,7 +39,6 @@ on:
       - ".github/workflows/**"
       - "scripts/**"
 
-# chỉ 1 server tại một thời điểm
 concurrency:
   group: anisette-server
   cancel-in-progress: false
@@ -33,32 +46,38 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  ANISETTE_PORT: "6969"
+  PATCH_MODE: ${{ github.event.inputs.client_info || 'windows' }}
+  DURATION_MIN: ${{ github.event.inputs.duration_minutes || '330' }}
+  ROTATE_IDENTITY: ${{ github.event.inputs.rotate_identity || 'true' }}
+  # tăng số này mỗi khi sửa patch/build để buộc build lại
+  BUILD_REV: "4"
+  # vá luôn User-Agent mà thư viện Provision dùng lúc provision ADI (x86_64,
+  # chuỗi gốc là akd/1.0 CFNetwork/1404.0.5 Darwin/22.3.0 = macOS 13) cho khớp
+  # danh tính khai báo; đặt "0" để tắt.
+  PATCH_PROVISION_UA: "1"
+
 jobs:
   serve:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-
-    env:
-      ANISETTE_PORT: "6969"
-      CF_TUNNEL: "1"
-      PATCH_MODE: ${{ github.event.inputs.client_info || 'windows' }}
-      DURATION_MIN: ${{ github.event.inputs.duration_minutes || '330' }}
-      # tăng số này mỗi khi sửa patch/build để buộc build lại
-      BUILD_REV: "3"
+    timeout-minutes: 355
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Thông tin môi trường
         run: |
-          echo "PATCH_MODE=$PATCH_MODE  DURATION_MIN=$DURATION_MIN"
-          lsb_release -ds || cat /etc/os-release | head -2
+          echo "PATCH_MODE=$PATCH_MODE  DURATION_MIN=$DURATION_MIN  ROTATE_IDENTITY=$ROTATE_IDENTITY"
+          lsb_release -ds || head -2 /etc/os-release
           nproc; free -m | head -2
 
       # ---------------------------------------------------------------- build
       - name: Cache binary + gói dub + lib Apple
         uses: actions/cache@v4
         with:
+          # KHÔNG cache $HOME/.config/anisette-v3/device.json: mỗi run phải có
+          # machine-id mới (xem README). Chỉ cache thư viện ADI + gói dub.
           path: |
             $HOME/anisette-build/bin
             $HOME/.dub
@@ -96,27 +115,71 @@ jobs:
           cd /tmp/av3
           echo "upstream commit: $(git rev-parse --short HEAD)"
 
-          # ---- vá danh tính client nếu được chọn
-          grep -n 'enum clientInfo' source/app.d
+          # ---- danh tính client + user agent publish qua /v3/client_info
+          #      (client PHẢI dùng đúng cặp này; Apple so khớp từ 12/10/2026)
           case "$PATCH_MODE" in
             windows)
-              sed -i 's|<MacBookPro13,2> <macOS;13.1;22C65>|<PC> <Windows;6.2(0,0);9200>|' source/app.d ;;
+              CI='<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.akd/1.0)>'
+              UA='akd/1.0 CFNetwork/808.1.4' ;;
             windows-itunes)
-              sed -i 's|<MacBookPro13,2> <macOS;13.1;22C65>|<PC> <Windows;6.2(0,0);9200>|' source/app.d
-              sed -i 's|(com.apple.akd/1.0)|(com.apple.iTunes/12.12.4.1)|' source/app.d ;;
-            upstream) : ;;
+              CI='<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.iTunes/12.12.4.1)>'
+              UA='akd/1.0 CFNetwork/808.1.4' ;;
+            mac10.12-diagnostic)
+              # ⚠️ ĐO ĐƯỢC 26/10/2026: machine-id sinh từ ADI Android + khai Mac
+              # 10.12.6 → Apple trả -80045 100% (2 server, 4 lần). Chỉ dùng để đo.
+              CI='<MacBookPro13,3> <Mac OS X;10.12.6;16G29> <com.apple.AuthKit/1 (com.apple.akd/1.0)>'
+              UA='akd/1.0 CFNetwork/811.5.4 Darwin/16.7.0' ;;
+            upstream)
+              CI=''
+              UA='akd/1.0 CFNetwork/808.1.4' ;;
+            *) echo "::error::PATCH_MODE không hợp lệ: $PATCH_MODE"; exit 1 ;;
           esac
-          grep -n 'enum clientInfo' source/app.d
 
-          # ---- vá: upstream nuốt exception khi provisioning -> log ra để biết lỗi thật
+          if [ -n "$CI" ]; then
+            python3 - "$CI" <<'PY'
+          import pathlib, sys
+          ci = sys.argv[1]
+          p = pathlib.Path("source/app.d")
+          s = p.read_text()
+          old = 'enum clientInfo = "<MacBookPro13,2> <macOS;13.1;22C65> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";'
+          assert old in s, "không tìm thấy enum clientInfo — upstream đã đổi, cần xem lại patch"
+          p.write_text(s.replace(old, 'enum clientInfo = "%s";' % ci, 1))
+          print("PATCH clientInfo ->", ci)
+          PY
+          fi
+
+          # user_agent trả ở /v3/client_info phải khớp danh tính ở trên
+          python3 - "$UA" <<'PY'
+          import pathlib, sys
+          ua = sys.argv[1]
+          p = pathlib.Path("source/app.d")
+          s = p.read_text()
+          old = '"user_agent": "akd/1.0 CFNetwork/808.1.4"'
+          assert old in s, "không tìm thấy user_agent trong /v3/client_info"
+          p.write_text(s.replace(old, '"user_agent": "%s"' % ua, 1))
+          print("PATCH user_agent ->", ua)
+          PY
+          grep -n 'enum clientInfo\|"user_agent"' source/app.d || true
+
+          # ---- log lỗi provisioning (upstream nuốt exception)
           python3 -c "import pathlib;p=pathlib.Path('source/app.d');s=p.read_text();a='} catch (Exception) {}';b='} catch (Exception e) { log.error(\"Provisioning FAILED at startup: \", e); }';print('PATCH OK' if a in s else 'PATCH MISS');p.write_text(s.replace(a,b,1))"
-          grep -n 'Provisioning FAILED' source/app.d || true
 
-          # ---- build (static, allAtOnce) — đúng công thức trong README upstream
+          # ---- User-Agent lúc provision ADI (thư viện Provision): mặc định là
+          #      "Darwin/22.3.0" (macOS 13) trong khi client-info khai Windows →
+          #      không nhất quán. Vá nếu tìm thấy file, không thì cảnh báo.
+          if [ "$PATCH_PROVISION_UA" = "1" ] && [ -n "$CI" ]; then
+            dub describe >/dev/null 2>&1 || true
+            PROV_ADI=$(find "$HOME/.dub/packages" -path '*provision*' -name adi.d 2>/dev/null | head -1)
+            if [ -n "$PROV_ADI" ] && grep -q 'CFNetwork/1404.0.5' "$PROV_ADI"; then
+              sed -i "s|akd/1.0 CFNetwork/1404.0.5 Darwin/22.3.0|$UA|" "$PROV_ADI"
+              echo "::notice::PATCH provisioning UA -> $UA ($PROV_ADI)"
+            else
+              echo "::warning::không tìm thấy UA provisioning để vá (bỏ qua) — PROV_ADI='$PROV_ADI'"
+            fi
+          fi
+
           export DC=ldc2
-          set -x
           dub build -c "static" --build-mode allAtOnce -b release --compiler=ldc2
-          set +x
           install -m 0755 ./anisette-v3-server "$HOME/anisette-build/bin/anisette-v3-server"
           ls -lh "$HOME/anisette-build/bin/"
 
@@ -124,70 +187,62 @@ jobs:
       - name: Chạy server + health check
         run: |
           set -uo pipefail
-          mkdir -p /tmp/av3-run /tmp/anisette
           export XDG_RUNTIME_DIR=/tmp/av3-run
-          ADI="$HOME/.config/anisette-v3"
-          mkdir -p "$ADI"
+          mkdir -p /tmp/av3-run /tmp/anisette
+          BIN="$HOME/anisette-build/bin/anisette-v3-server" ADI="$HOME/.config/anisette-v3" \
+            PORT="$ANISETTE_PORT" bash scripts/start_server.sh start
+          curl -fsS --max-time 10 "http://127.0.0.1:${ANISETTE_PORT}/v3/client_info" \
+            -o /tmp/anisette/client_info.json
+          cat /tmp/anisette/client_info.json; echo
+          echo "--- server.log ---"; tail -30 /tmp/anisette/server.log
 
-          nohup "$HOME/anisette-build/bin/anisette-v3-server" \
-              --host 0.0.0.0 --port "$ANISETTE_PORT" \
-              --adi-path "$ADI" --timeout 15000 \
-              > /tmp/anisette/server.log 2>&1 &
-          echo $! > /tmp/anisette/pid
-          echo "server pid=$(cat /tmp/anisette/pid)"
-
-          for i in $(seq 1 90); do
-            if curl -fsS --max-time 5 "http://127.0.0.1:${ANISETTE_PORT}/v3/client_info" -o /tmp/anisette/client_info.json 2>/dev/null; then
-              echo "::notice::server up sau ${i}0s"
-              break
-            fi
-            sleep 10
-            if ! kill -0 "$(cat /tmp/anisette/pid)" 2>/dev/null; then
-              echo "::error::server chết khi khởi động"
-              tail -80 /tmp/anisette/server.log; exit 1
-            fi
-          done
-
-          if ! curl -fsS --max-time 5 "http://127.0.0.1:${ANISETTE_PORT}/v3/client_info" >/dev/null; then
-            echo "::error::health check that bai"; tail -120 /tmp/anisette/server.log; exit 1
-          fi
-
-          echo "--- /v3/client_info ---"; cat /tmp/anisette/client_info.json; echo
-          echo "--- GET / (v1, endpoint mà tool Sideloadtool dùng) ---"
-          CODE=$(curl -s -o /tmp/anisette/v1.json -w '%{http_code}' --max-time 180 "http://127.0.0.1:${ANISETTE_PORT}/" || echo 000)
-          echo "HTTP $CODE"
-          head -c 2000 /tmp/anisette/v1.json; echo
-          echo "--- server.log ---"
-          cat /tmp/anisette/server.log
-          if grep -q 'X-Apple-I-MD-M' /tmp/anisette/v1.json; then
-            echo "::notice::ADI provisioned OK (có X-Apple-I-MD-M)"
-            jq -r 'to_entries[] | "  \(.key): \(.value)"' /tmp/anisette/v1.json 2>/dev/null || true
-          else
-            echo "::error::v1 KHÔNG có X-Apple-I-MD-M (HTTP $CODE) — xem log ở trên"
-          fi
-
-      - name: Self-test GSA (không cần mật khẩu)
-        id: gsa
-        if: ${{ always() }}
+      # ------------------------------------------------------- identity gate
+      - name: Kiểm chứng danh tính với Apple (không cần mật khẩu)
+        id: gate
         run: |
           set -uo pipefail
-          python3 scripts/gsa_probe.py "http://127.0.0.1:${ANISETTE_PORT}" \
-            probe-nonexistent-0000@icloud.com 6 \
-            > /tmp/anisette/gsa.json 2>/tmp/anisette/gsa.err || true
-          cat /tmp/anisette/gsa.json || true; cat /tmp/anisette/gsa.err || true
-          VERDICT=$(jq -r '.verdict // "UNKNOWN"' /tmp/anisette/gsa.json 2>/dev/null || echo UNKNOWN)
+          MAX_ROT=2
+          ROT=0
+          VERDICT=UNKNOWN
+          while :; do
+            python3 scripts/gsa_probe.py "http://127.0.0.1:${ANISETTE_PORT}" \
+              --tries 4 --matrix --json /tmp/anisette/gsa.json >/dev/null 2>&1 || true
+            VERDICT=$(jq -r '.verdict // "UNKNOWN"' /tmp/anisette/gsa.json 2>/dev/null || echo UNKNOWN)
+            EC=$(jq -r '.ec // "-"' /tmp/anisette/gsa.json 2>/dev/null || echo -)
+            echo "gate: verdict=$VERDICT ec=$EC (đã xoay $ROT lần)"
+            case "$VERDICT" in
+              PASS) break ;;
+              ANISETTE_ERROR)
+                echo "::error::server không sinh được anisette headers — xem /tmp/anisette/server.log"
+                tail -80 /tmp/anisette/server.log || true
+                exit 1 ;;
+            esac
+            if [ "$ROT" -ge "$MAX_ROT" ] || [ "$ROTATE_IDENTITY" != "true" ]; then break; fi
+            ROT=$((ROT+1))
+            echo "::warning::danh tính bị từ chối/không kết luận được -> xoay machine-id (lần $ROT/$MAX_ROT)"
+            BIN="$HOME/anisette-build/bin/anisette-v3-server" ADI="$HOME/.config/anisette-v3" \
+              PORT="$ANISETTE_PORT" bash scripts/start_server.sh rotate || exit 1
+            curl -fsS --max-time 10 "http://127.0.0.1:${ANISETTE_PORT}/v3/client_info" \
+              -o /tmp/anisette/client_info.json
+          done
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
-          ATT=$(jq -r '.attempts_used // "?"' /tmp/anisette/gsa.json 2>/dev/null || echo "?")
-          if [ "$VERDICT" = "PASS" ]; then
-            echo "::notice::GSA chấp nhận danh tính server (ec=$(jq -r '.ec' /tmp/anisette/gsa.json), đúng ở lần thử $ATT)"
-          else
-            echo "::warning::GSA trả 5xx sau $ATT lần thử — Apple edge đang chặn theo đợt (vẫn có thể đăng nhập được, tool cần retry/backoff)."
-          fi
+
+          case "$VERDICT" in
+            PASS)
+              echo "::notice::Apple CHẤP NHẬN danh tính (ec=$(jq -r '.ec' /tmp/anisette/gsa.json))" ;;
+            IDENTITY_MISMATCH)
+              echo "::error::-80045: Apple từ chối NGUỒN GỐC machine-id (ADI Android + khai '$PATCH_MODE'). Đổi PATCH_MODE sang windows, hoặc dùng server Mac ADI thật (mac-ani.jkcoxson.com / ani.stikstore.app) — xoay machine-id KHÔNG chữa được lỗi này." ;;
+            EDGE_THROTTLED)
+              echo "::warning::Apple edge trả 5xx cho mọi lần thử — chặn theo đợt, KHÔNG phải danh tính sai. Client phải retry với backoff (xem ghi chú trong README)." ;;
+            *)
+              echo "::warning::gate không kết luận được ($VERDICT)" ;;
+          esac
+          jq -r '.diagnostics // {} | to_entries[] | "  thử \(.key): \(.value.verdict) (http \(.value.http), ec \(.value.ec))"' \
+            /tmp/anisette/gsa.json 2>/dev/null || true
 
       # --------------------------------------------------------- cloudflare
-      - name: Cloudflare quick tunnel (luôn bật)
+      - name: Cloudflare quick tunnel
         id: cf
-        if: ${{ always() }}
         run: |
           set -uo pipefail
           curl -fsSL -o /tmp/cloudflared \
@@ -199,7 +254,7 @@ jobs:
 
           URL=""
           for i in $(seq 1 40); do
-            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/anisette/cf.log | head -1 || true)
+            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/anisette/cf.log | tail -1 || true)
             [ -n "$URL" ] && break
             sleep 3
           done
@@ -211,96 +266,118 @@ jobs:
           echo "::notice::Cloudflare URL = $URL"
 
           for i in $(seq 1 20); do
-            if curl -fsS --max-time 15 "$URL/v3/client_info" -o /tmp/anisette/cf_probe.json; then
+            if curl -fsS --max-time 15 "$URL/v3/client_info" -o /dev/null; then
               echo "::notice::tunnel trả lời OK qua Internet"
-              cat /tmp/anisette/cf_probe.json; echo
               exit 0
             fi
             sleep 5
           done
-          echo "::warning::tunnel chưa trả lời (có thể DNS trễ) — vẫn tiếp tục"
+          echo "::warning::tunnel chưa trả lời (DNS trễ?) — vẫn tiếp tục"
 
-      # -------------------------------------------------------------- report
-      - name: Công bố URL
+      # -------------------------------------------------------------- status
+      - name: Công bố URL + trạng thái
         if: ${{ always() }}
+        env:
+          RUN_ID: ${{ github.run_id }}
+          URL_FROM_TUNNEL: ${{ steps.cf.outputs.cf_url }}
+          PATCH_MODE: ${{ env.PATCH_MODE }}
+          DURATION_MIN: ${{ env.DURATION_MIN }}
         run: |
           set -uo pipefail
-          CF="${{ steps.cf.outputs.cf_url }}"
-          URL="$CF"
-          CI=$(cat /tmp/anisette/client_info.json 2>/dev/null || echo '{}')
+          URL="$URL_FROM_TUNNEL"
+          DEVICE_ID=$(jq -r '."X-Mme-Device-Id" // empty' /tmp/anisette/v1_probe.json 2>/dev/null || true)
+          EXPIRES_AT=$(date -u -d "+${DURATION_MIN} minutes" +%FT%TZ 2>/dev/null || true)
+          export URL EXPIRES_AT RUN_ID PATCH_MODE DEVICE_ID
+          bash scripts/status_compose.sh
+          python3 scripts/status_publish.py /tmp/anisette/status.json --url "$URL" --alive true || \
+            echo "::warning::publish status thất bại"
 
           {
             echo "## 🍏 Anisette server đang chạy"
             echo
-            echo "| Đường truy cập | URL |"
+            echo "| | |"
             echo "|---|---|"
-            [ -n "$CF" ] && echo "| ☁️ Anisette URL (Cloudflare, HTTPS) | \`$CF\` |"
-            [ -z "$CF" ] && echo "| ⚠️ | không lấy được URL cloudflared — xem log |"
+            echo "| ☁️ URL (HTTPS) | \`$URL\` |"
+            echo "| Danh tính | \`$PATCH_MODE\` — \`$(jq -r '.client_info // "?"' /tmp/anisette/client_info.json 2>/dev/null)\` |"
+            echo "| User-Agent | \`$(jq -r '.user_agent // "?"' /tmp/anisette/client_info.json 2>/dev/null)\` |"
+            echo "| GSA gate | \`$(jq -r '.verdict // "UNKNOWN"' /tmp/anisette/gsa.json 2>/dev/null)\` (ec=\`$(jq -r '.ec // "-"' /tmp/anisette/gsa.json 2>/dev/null)\`) |"
+            echo "| Hết hạn | \`$EXPIRES_AT\` |"
             echo
-            echo "**client_info:** \`$(echo "$CI" | jq -r '.client_info // "?"')\`"
-            echo
-            echo "**GSA self-test:** \`$(jq -r '.verdict // "UNKNOWN"' /tmp/anisette/gsa.json 2>/dev/null || echo UNKNOWN)\` (ec=\`$(jq -r '.ec // "-"' /tmp/anisette/gsa.json 2>/dev/null || echo -)\`)"
-            echo
-            echo "**user_agent:** \`$(echo "$CI" | jq -r '.user_agent // "?"')\`"
-            echo
-            echo "Server sẽ tắt khi job kết thúc (tối đa ~${DURATION_MIN} phút). Cron 6 giờ sẽ bật lại."
+            echo "Đọc lại URL bằng máy: \`https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/status/status.json\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          GSA_JSON=$(cat /tmp/anisette/gsa.json 2>/dev/null || echo '{}')
-          {
-            echo "$CI" | jq -c \
-              --arg cf "$CF" --arg run "$GITHUB_RUN_ID" --arg at "$(date -u +%FT%TZ)" \
-              --argjson gsa "${GSA_JSON:-{\}}" \
-              '{updated_at:$at, run_id:$run, url:$cf, anisette_url:$cf,
-                client_info:(.client_info // null),
-                user_agent:(.user_agent // null), gsa_verdict:($gsa.verdict // "UNKNOWN"),
-                gsa_ec:($gsa.ec // null)}'
-          } > /tmp/anisette/status.json
-          cat /tmp/anisette/status.json
-
-          # đẩy status.json lên nhánh "status" để lấy URL bằng raw.githubusercontent
-          git config user.name  "anisette-bot"
-          git config user.email "anisette-bot@users.noreply.github.com"
-          git checkout -q -B status 2>/dev/null || true
-          mkdir -p status
-          cp /tmp/anisette/status.json status/status.json
-          printf '%s\n' "$CF" > status/url.txt
-          git add -f status/status.json status/url.txt
-          git commit -qm "status: $(date -u +%FT%TZ)" || true
-          git push -q -f origin status || echo "::warning::push status thất bại"
-
       # ---------------------------------------------------------- supervisor
-      - name: Giữ server sống (tới hết DURATION_MIN)
+      - name: Giữ server sống + heartbeat (tới hết DURATION_MIN)
+        env:
+          RUN_ID: ${{ github.run_id }}
+          PATCH_MODE: ${{ env.PATCH_MODE }}
         run: |
           set -uo pipefail
           PID=$(cat /tmp/anisette/pid)
           END=$(( $(date +%s) + DURATION_MIN * 60 ))
-          FAIL=0
+          export EXPIRES_AT=$(date -u -d "@$END" +%FT%TZ 2>/dev/null || true)
+          URL=$(jq -r '.url // empty' /tmp/anisette/status.json 2>/dev/null || true)
+          FAIL=0; TICK=0
           while [ "$(date +%s)" -lt "$END" ]; do
-            sleep 60
+            sleep 60; TICK=$((TICK+1))
+
+            # 1) server còn sống?
             if ! kill -0 "$PID" 2>/dev/null; then
-              echo "::error::anisette server đã chết"; tail -100 /tmp/anisette/server.log; exit 1
+              echo "::error::anisette server đã chết"; tail -80 /tmp/anisette/server.log; exit 1
             fi
             if curl -fsS --max-time 10 "http://127.0.0.1:${ANISETTE_PORT}/v3/client_info" >/dev/null 2>&1; then
               FAIL=0
             else
               FAIL=$((FAIL+1)); echo "health fail #$FAIL"
               if [ "$FAIL" -ge 5 ]; then
-                echo "::error::server không phản hồi 5 lần liên tiếp"; tail -120 /tmp/anisette/server.log; exit 1
+                echo "::error::server không phản hồi 5 lần liên tiếp"; tail -80 /tmp/anisette/server.log; exit 1
               fi
             fi
+
+            # 2) tunnel còn sống? (đây là thứ làm client báo 503/-80045 sai)
             if ! kill -0 "$(cat /tmp/anisette/cf.pid 2>/dev/null)" 2>/dev/null; then
-              echo "::warning::cloudflared chết, thử bật lại"
+              echo "::warning::cloudflared chết, bật lại"
               nohup /tmp/cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:${ANISETTE_PORT}" \
                 >> /tmp/anisette/cf.log 2>&1 &
               echo $! > /tmp/anisette/cf.pid
+            fi
+            if [ -n "${URL:-}" ] && ! curl -fsS --max-time 15 "$URL/v3/client_info" >/dev/null 2>&1; then
+              sleep 10
+              NEW=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/anisette/cf.log | tail -1 || true)
+              if [ -n "$NEW" ] && [ "$NEW" != "$URL" ] && curl -fsS --max-time 15 "$NEW/v3/client_info" >/dev/null 2>&1; then
+                echo "::warning::tunnel đổi URL: $URL -> $NEW (publish lại)"
+                URL="$NEW"; export URL
+                bash scripts/status_compose.sh >/dev/null
+                python3 scripts/status_publish.py /tmp/anisette/status.json --url "$URL" --alive true \
+                  || echo "::warning::publish status thất bại"
+              else
+                echo "::warning::URL $URL không trả lời và chưa có URL mới"
+              fi
+            fi
+
+            # 3) heartbeat + kiểm tra lại danh tính mỗi 15 phút
+            if [ $((TICK % 15)) -eq 0 ]; then
+              python3 scripts/gsa_probe.py "http://127.0.0.1:${ANISETTE_PORT}" \
+                --tries 3 --json /tmp/anisette/gsa.json >/dev/null 2>&1 || true
+              echo "recheck: $(jq -r '.verdict' /tmp/anisette/gsa.json 2>/dev/null)"
+              bash scripts/status_compose.sh >/dev/null
+              python3 scripts/status_publish.py /tmp/anisette/status.json --url "$URL" --alive true \
+                || echo "::warning::publish status thất bại"
             fi
             echo "[$(date -u +%H:%M:%S)] alive (còn $(( (END - $(date +%s)) / 60 )) phút)"
           done
           echo "::notice::hết thời gian, kết thúc job (cron sẽ bật lại)"
 
-      - name: Log cuối (khi job kết thúc)
+      - name: Đánh dấu status đã chết + log cuối
         if: always()
+        env:
+          RUN_ID: ${{ github.run_id }}
+          PATCH_MODE: ${{ env.PATCH_MODE }}
         run: |
-          echo "=== server.log (60 dòng cuối) ==="; tail -60 /tmp/anisette/server.log 2>/dev/null || true
-          echo "=== cloudflared.log (20 dòng cuối) ==="; tail -20 /tmp/anisette/cf.log 2>/dev/null || true
+          set -uo pipefail
+          # Client phải biết URL này chết rồi, đừng dùng nữa.
+          bash scripts/status_compose.sh >/dev/null 2>&1 || true
+          python3 scripts/status_publish.py /tmp/anisette/status.json --alive false \
+            || echo "::warning::publish status (dead) thất bại"
+          echo "=== server.log (40 dòng cuối) ==="; tail -40 /tmp/anisette/server.log 2>/dev/null || true
+          echo "=== cloudflared.log (15 dòng cuối) ==="; tail -15 /tmp/anisette/cf.log 2>/dev/null || true
