@@ -1,0 +1,300 @@
+name: anisette-server
+
+# Server anisette-v3 tự host, chạy trên GitHub Actions.
+# - Build từ source (D + dub) và cache binary để các lần sau start trong vài giây.
+# - Mở 2 đường truy cập: Tailscale (nếu có secret TS_AUTHKEY) + Cloudflare quick tunnel (luôn có).
+# - Mỗi job chạy tối đa ~5h50m, cron 6h/lần -> gần như liên tục.
+
+on:
+  workflow_dispatch:
+    inputs:
+      client_info:
+        description: "Danh tính gửi Apple (upstream = Mac, windows = <PC> Windows)"
+        type: choice
+        options: [upstream, windows, windows-itunes]
+        default: upstream
+      duration_minutes:
+        description: "Thời gian chạy (phút, tối đa 350)"
+        default: "350"
+  schedule:
+    # mỗi 6 giờ; job ~350 phút -> nghỉ ~10 phút giữa 2 lượt
+    - cron: "0 */6 * * *"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - "scripts/**"
+
+# chỉ 1 server tại một thời điểm
+concurrency:
+  group: anisette-server
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      ANISETTE_PORT: "6969"
+      TS_HOSTNAME: "anisette"
+      CF_TUNNEL: "1"
+      PATCH_MODE: ${{ github.event.inputs.client_info || 'upstream' }}
+      DURATION_MIN: ${{ github.event.inputs.duration_minutes || '350' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Thông tin môi trường
+        run: |
+          echo "PATCH_MODE=$PATCH_MODE  DURATION_MIN=$DURATION_MIN"
+          lsb_release -ds || cat /etc/os-release | head -2
+          nproc; free -m | head -2
+
+      # ---------------------------------------------------------------- build
+      - name: Cache binary + gói dub + lib Apple
+        uses: actions/cache@v4
+        with:
+          path: |
+            $HOME/anisette-build/bin
+            $HOME/.dub
+            $HOME/.config/anisette-v3/lib
+          key: av3-${{ runner.os }}-${{ env.PATCH_MODE }}-${{ hashFiles('.github/workflows/serve.yml') }}-v3
+
+      - name: Cài toolchain D (ldc + dub)
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            ca-certificates curl git jq clang libssl-dev zlib1g-dev ldc dub
+          ldc2 --version | head -3
+          dub --version
+
+      - name: Build anisette-v3-server
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/anisette-build/bin"
+          if [ -x "$HOME/anisette-build/bin/anisette-v3-server" ]; then
+            echo "::notice::binary đã có trong cache -> bỏ qua build"
+            "$HOME/anisette-build/bin/anisette-v3-server" --help | head -5 || true
+            exit 0
+          fi
+
+          rm -rf /tmp/av3
+          for i in 1 2 3; do
+            git clone --depth 1 https://github.com/Dadoum/anisette-v3-server /tmp/av3 && break
+            echo "clone loi, thu lai ($i)"; sleep 5
+          done
+          cd /tmp/av3
+          echo "upstream commit: $(git rev-parse --short HEAD)"
+
+          # ---- vá danh tính client nếu được chọn
+          grep -n 'enum clientInfo' source/app.d
+          case "$PATCH_MODE" in
+            windows)
+              sed -i 's|<MacBookPro13,2> <macOS;13.1;22C65>|<PC> <Windows;6.2(0,0);9200>|' source/app.d ;;
+            windows-itunes)
+              sed -i 's|<MacBookPro13,2> <macOS;13.1;22C65>|<PC> <Windows;6.2(0,0);9200>|' source/app.d
+              sed -i 's|(com.apple.akd/1.0)|(com.apple.iTunes/12.12.4.1)|' source/app.d ;;
+            upstream) : ;;
+          esac
+          grep -n 'enum clientInfo' source/app.d
+
+          # ---- build (static, allAtOnce) — đúng công thức trong README upstream
+          export DC=ldc2
+          set -x
+          dub build -c "static" --build-mode allAtOnce -b release --compiler=ldc2
+          set +x
+          install -m 0755 ./anisette-v3-server "$HOME/anisette-build/bin/anisette-v3-server"
+          ls -lh "$HOME/anisette-build/bin/"
+
+      # --------------------------------------------------------------- server
+      - name: Chạy server + health check
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/av3-run /tmp/anisette
+          export XDG_RUNTIME_DIR=/tmp/av3-run
+          ADI="$HOME/.config/anisette-v3"
+          mkdir -p "$ADI"
+
+          nohup "$HOME/anisette-build/bin/anisette-v3-server" \
+              --host 0.0.0.0 --port "$ANISETTE_PORT" \
+              --adi-path "$ADI" --timeout 15000 \
+              > /tmp/anisette/server.log 2>&1 &
+          echo $! > /tmp/anisette/pid
+          echo "server pid=$(cat /tmp/anisette/pid)"
+
+          for i in $(seq 1 90); do
+            if curl -fsS --max-time 5 "http://127.0.0.1:${ANISETTE_PORT}/v3/client_info" -o /tmp/anisette/client_info.json 2>/dev/null; then
+              echo "::notice::server up sau ${i}0s"
+              break
+            fi
+            sleep 10
+            if ! kill -0 "$(cat /tmp/anisette/pid)" 2>/dev/null; then
+              echo "::error::server chết khi khởi động"
+              tail -80 /tmp/anisette/server.log; exit 1
+            fi
+          done
+
+          if ! curl -fsS --max-time 5 "http://127.0.0.1:${ANISETTE_PORT}/v3/client_info" >/dev/null; then
+            echo "::error::health check that bai"; tail -120 /tmp/anisette/server.log; exit 1
+          fi
+
+          echo "--- /v3/client_info ---"; cat /tmp/anisette/client_info.json; echo
+          echo "--- GET / (v1, endpoint mà tool Sideloadtool dùng) ---"
+          time curl -fsS --max-time 60 "http://127.0.0.1:${ANISETTE_PORT}/" -o /tmp/anisette/v1.json
+          head -c 600 /tmp/anisette/v1.json; echo
+          grep -q 'X-Apple-I-MD-M' /tmp/anisette/v1.json \
+            && echo "::notice::ADI provisioned OK (có X-Apple-I-MD-M)" \
+            || { echo "::error::không có X-Apple-I-MD-M"; tail -80 /tmp/anisette/server.log; exit 1; }
+
+      # ------------------------------------------------------------ tailscale
+      - name: Tailscale (chỉ chạy khi có secret TS_AUTHKEY)
+        id: ts
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          set -uo pipefail
+          if [ -z "${TS_AUTHKEY:-}" ]; then
+            echo "::warning::chưa có secret TS_AUTHKEY -> bỏ qua Tailscale"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          curl -fsSL https://tailscale.com/install.sh | sudo sh
+          sudo tailscale up --authkey="$TS_AUTHKEY" --hostname="$TS_HOSTNAME" \
+            --accept-dns=false ${TS_EXTRA_ARGS:-} || {
+              echo "::error::tailscale up thất bại (key hết hạn/sai tag?)"
+              echo "enabled=false" >> "$GITHUB_OUTPUT"; exit 0; }
+
+          TS_IP=$(tailscale ip -4 | head -1)
+          echo "ts_ip=$TS_IP" >> "$GITHUB_OUTPUT"
+          echo "http_url=http://${TS_IP}:${ANISETTE_PORT}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Tailscale IP = $TS_IP"
+
+          # thử Serve để có HTTPS + tên miền (cần bật HTTPS trong tailnet)
+          if sudo timeout 120 tailscale serve --bg --https=443 "http://127.0.0.1:${ANISETTE_PORT}"; then
+            DNS=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+            echo "https_url=https://${DNS}" >> "$GITHUB_OUTPUT"
+            echo "dns_name=$DNS" >> "$GITHUB_OUTPUT"
+            sudo tailscale serve status || true
+          else
+            echo "::warning::tailscale serve không bật được (HTTPS chưa enable?) — dùng http://$TS_IP:6969"
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      # --------------------------------------------------------- cloudflare
+      - name: Cloudflare quick tunnel (luôn bật)
+        id: cf
+        run: |
+          set -uo pipefail
+          curl -fsSL -o /tmp/cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x /tmp/cloudflared
+          nohup /tmp/cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:${ANISETTE_PORT}" \
+            > /tmp/anisette/cf.log 2>&1 &
+          echo $! > /tmp/anisette/cf.pid
+
+          URL=""
+          for i in $(seq 1 40); do
+            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/anisette/cf.log | head -1 || true)
+            [ -n "$URL" ] && break
+            sleep 3
+          done
+          if [ -z "$URL" ]; then
+            echo "::warning::không lấy được URL cloudflared"; tail -40 /tmp/anisette/cf.log
+            exit 0
+          fi
+          echo "cf_url=$URL" >> "$GITHUB_OUTPUT"
+          echo "::notice::Cloudflare URL = $URL"
+
+          for i in $(seq 1 20); do
+            if curl -fsS --max-time 15 "$URL/v3/client_info" -o /tmp/anisette/cf_probe.json; then
+              echo "::notice::tunnel trả lời OK qua Internet"
+              cat /tmp/anisette/cf_probe.json; echo
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::warning::tunnel chưa trả lời (có thể DNS trễ) — vẫn tiếp tục"
+
+      # -------------------------------------------------------------- report
+      - name: Công bố URL
+        run: |
+          set -uo pipefail
+          TS_HTTP="${{ steps.ts.outputs.http_url }}"
+          TS_HTTPS="${{ steps.ts.outputs.https_url }}"
+          CF="${{ steps.cf.outputs.cf_url }}"
+          CI=$(cat /tmp/anisette/client_info.json 2>/dev/null || echo '{}')
+
+          {
+            echo "## 🍏 Anisette server đang chạy"
+            echo
+            echo "| Đường truy cập | URL |"
+            echo "|---|---|"
+            [ -n "$CF" ] && echo "| ☁️ Cloudflare (public, dùng ngay) | \`$CF\` |"
+            [ -n "$TS_HTTPS" ] && echo "| 🔒 Tailscale HTTPS | \`$TS_HTTPS\` |"
+            [ -n "$TS_HTTP" ] && echo "| 🔒 Tailscale HTTP | \`$TS_HTTP\` |"
+            echo
+            echo "**client_info:** \`$(echo "$CI" | jq -r '.client_info // "?"')\`"
+            echo
+            echo "**user_agent:** \`$(echo "$CI" | jq -r '.user_agent // "?"')\`"
+            echo
+            echo "Server sẽ tắt khi job kết thúc (tối đa ~${DURATION_MIN} phút). Cron 6 giờ sẽ bật lại."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo "$CI" | jq -c \
+              --arg cf "$CF" --arg ts_https "$TS_HTTPS" --arg ts_http "$TS_HTTP" \
+              --arg run "$GITHUB_RUN_ID" --arg at "$(date -u +%FT%TZ)" \
+              '{updated_at:$at, run_id:$run, cloudflare:$cf, tailscale_https:$ts_https,
+                tailscale_http:$ts_http, client_info:(.client_info // null),
+                user_agent:(.user_agent // null)}'
+          } > /tmp/anisette/status.json
+          cat /tmp/anisette/status.json
+
+          # đẩy status.json lên nhánh "status" để lấy URL bằng raw.githubusercontent
+          git config user.name  "anisette-bot"
+          git config user.email "anisette-bot@users.noreply.github.com"
+          git checkout -q -B status 2>/dev/null || true
+          mkdir -p status && cp /tmp/anisette/status.json status/status.json
+          git add status/status.json
+          git commit -qm "status: $(date -u +%FT%TZ)" || true
+          git push -q -f origin status || echo "::warning::push status thất bại"
+
+      # ---------------------------------------------------------- supervisor
+      - name: Giữ server sống (tới hết DURATION_MIN)
+        run: |
+          set -uo pipefail
+          PID=$(cat /tmp/anisette/pid)
+          END=$(( $(date +%s) + DURATION_MIN * 60 ))
+          FAIL=0
+          while [ "$(date +%s)" -lt "$END" ]; do
+            sleep 60
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo "::error::anisette server đã chết"; tail -100 /tmp/anisette/server.log; exit 1
+            fi
+            if curl -fsS --max-time 10 "http://127.0.0.1:${ANISETTE_PORT}/v3/client_info" >/dev/null 2>&1; then
+              FAIL=0
+            else
+              FAIL=$((FAIL+1)); echo "health fail #$FAIL"
+              if [ "$FAIL" -ge 5 ]; then
+                echo "::error::server không phản hồi 5 lần liên tiếp"; tail -120 /tmp/anisette/server.log; exit 1
+              fi
+            fi
+            if ! kill -0 "$(cat /tmp/anisette/cf.pid 2>/dev/null)" 2>/dev/null; then
+              echo "::warning::cloudflared chết, thử bật lại"
+              nohup /tmp/cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:${ANISETTE_PORT}" \
+                >> /tmp/anisette/cf.log 2>&1 &
+              echo $! > /tmp/anisette/cf.pid
+            fi
+            echo "[$(date -u +%H:%M:%S)] alive (còn $(( (END - $(date +%s)) / 60 )) phút)"
+          done
+          echo "::notice::hết thời gian, kết thúc job (cron sẽ bật lại)"
+
+      - name: Log cuối (khi job kết thúc)
+        if: always()
+        run: |
+          echo "=== server.log (60 dòng cuối) ==="; tail -60 /tmp/anisette/server.log 2>/dev/null || true
+          echo "=== cloudflared.log (20 dòng cuối) ==="; tail -20 /tmp/anisette/cf.log 2>/dev/null || true
