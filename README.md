@@ -43,6 +43,11 @@ Quy tắc cho client:
 
 ---
 
+> ⚠️ **Đường dẫn cũ đã bỏ:** `.../status/status.json` (nhánh `status`, thư mục `status/`) trả **404**
+> vì GitHub hiểu `status/status.json` là *tên nhánh*. Dùng `.../live/status.json` (nhánh `live`,
+> file ở gốc repo) hoặc đọc qua API:
+> `https://api.github.com/repos/jsjsjwieje658-spec/anisette-server/contents/status.json?ref=live`.
+
 ## ⚠️ Ba lỗi khác nhau, đừng gộp làm một
 
 Đo trên server này + các server công khai ngày **26/10/2026** (`o=init`, Apple ID không tồn tại,
@@ -164,6 +169,10 @@ Client **phải** retry 5xx với backoff và **không** được báo `-80045` 
 | Ngày | Việc | Kết quả |
 |---|---|---|
 | 26/10/2026 | Self-test run `40319963400` (danh tính `windows`) | lần 1–2: `503` HTML · lần 3: `200 / ec -20970` → **PASS** |
+| 26/10/2026 | Gate trong run `40325948777` (code mới) | `PASS` ở lần thử **2** (`gsa.attempts_used=2`) — retry có tác dụng |
+| 26/10/2026 | Gọi server đang chạy từ **một IP khác** (sandbox) | `503` → (backoff 2 s) → `200 / ec -20209` = **PASS**; cùng URL, cùng header, cùng machine-id |
+| 26/10/2026 | Cancel run → bước cuối `always()` | `status.json` chuyển `alive:false` (bản cũ vẫn quảng cáo URL chết → client báo `-80045` sai) |
+| 26/10/2026 | `raw.githubusercontent.com/.../live/status.json` | **200** (đường cũ `.../status/status.json` trả 404 — xem ghi chú dưới) |
 | 26/10/2026 | `status.json` sau khi run bị cancel | URL trả **HTTP 530** (tunnel chết) → client báo sai `-80045` |
 | 26/10/2026 | Matrix (`tools/gsa_matrix.py`) trên 8 server công khai | xem bảng §"Ba lỗi khác nhau" |
 | 26/10/2026 | `scripts/test_gsa_probe.py` | 9/9 case pass |

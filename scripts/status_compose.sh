@@ -14,6 +14,12 @@ CI=${CI_FILE:-/tmp/anisette/client_info.json}
 GSA=${GSA_FILE:-/tmp/anisette/gsa.json}
 
 CI_JSON=$(cat "$CI" 2>/dev/null || echo '{}')
+# md_rinfo chỉ có trong headers v1 (GET /), không có trong /v3/client_info
+V1_JSON=$(cat "${V1_PROBE:-/tmp/anisette/v1_probe.json}" 2>/dev/null || echo '{}')
+[ -n "$V1_JSON" ] || V1_JSON='{}'
+CI_JSON=$(jq -c --argjson v1 "$V1_JSON" '
+   . + {md_rinfo: (.md_rinfo // $v1["X-Apple-I-MD-RINFO"] // null),
+        device_id: (.device_id // $v1["X-Mme-Device-Id"] // null)}' <<<"$CI_JSON" 2>/dev/null || echo "$CI_JSON")
 GSA_JSON=$(cat "$GSA" 2>/dev/null || echo '{}')
 [ -n "$CI_JSON" ] || CI_JSON='{}'
 [ -n "$GSA_JSON" ] || GSA_JSON='{}'
