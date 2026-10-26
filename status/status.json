@@ -1,0 +1,23 @@
+{
+ "updated_at": "2026-10-26T12:49:45Z",
+ "heartbeat_at": "2026-10-26T12:49:45Z",
+ "alive": true,
+ "run_id": "40324926280",
+ "url": "https://obvious-annie-scott-encryption.trycloudflare.com",
+ "anisette_url": "https://obvious-annie-scott-encryption.trycloudflare.com",
+ "expires_at": "2026-10-26T18:19:45Z",
+ "identity_mode": "windows",
+ "client_info": "<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
+ "user_agent": "akd/1.0 CFNetwork/808.1.4",
+ "device_id": "E798F832-958D-4A77-B364-7FBB5D10DFE3",
+ "md_rinfo": null,
+ "gsa": {
+  "verdict": "PASS",
+  "http": 200,
+  "ec": -20209,
+  "checked_at": "2026-10-26T12:49:45Z",
+  "attempts_used": 2
+ },
+ "protocol": "anisette-v3 (v1 GET / compatible)",
+ "notes": "alive=false hoặc quá expires_at nghĩa là URL đã chết — đọc lại file này, đừng dùng URL cũ."
+}
