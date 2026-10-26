@@ -111,6 +111,7 @@ và được Apple chấp nhận (`ec -20970`) khi khai **đúng** chuỗi đó 
 
 ```
 scripts/gsa_probe.py          # phân loại PASS / IDENTITY_MISMATCH / EDGE_THROTTLED / ANISETTE_ERROR
+scripts/gsa_matrix.py         # đo 4-8 danh tính trên CÙNG machine-id của server (ra bảng ở README)
 scripts/test_gsa_probe.py     # test phân loại (không gọi mạng) — 9 case
 scripts/start_server.sh       # start | rotate | stop + health/provision check
 scripts/status_compose.sh     # ghép status.json
@@ -120,6 +121,7 @@ scripts/status_publish.py     # đẩy status.json + url.txt lên nhánh live
 ```bash
 python3 scripts/test_gsa_probe.py                 # 9/9 pass
 python3 scripts/gsa_probe.py http://127.0.0.1:6969 --tries 4 --matrix
+python3 scripts/gsa_matrix.py https://ani.jkcoxson.com https://ani.sidestore.app
 # exit 0 PASS · 2 -80045 · 3 edge 5xx · 4 server không sinh được anisette
 ```
 
