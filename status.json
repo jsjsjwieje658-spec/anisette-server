@@ -1,0 +1,23 @@
+{
+ "updated_at": "2026-10-31T16:58:32Z",
+ "heartbeat_at": "2026-10-31T16:58:32Z",
+ "alive": true,
+ "run_id": "41219730240",
+ "url": "https://discover-transparent-inspections-rating.trycloudflare.com",
+ "anisette_url": "https://discover-transparent-inspections-rating.trycloudflare.com",
+ "expires_at": "2026-10-31T22:28:32Z",
+ "identity_mode": "windows",
+ "client_info": "<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
+ "user_agent": "akd/1.0 CFNetwork/1408.0.4 Darwin/22.5.0",
+ "device_id": "822BFD1A-F740-47A6-B589-AFACB6766093",
+ "md_rinfo": "17106176",
+ "gsa": {
+  "verdict": "IDENTITY_MISMATCH",
+  "http": 200,
+  "ec": -80045,
+  "checked_at": "2026-10-31T16:58:32Z",
+  "attempts_used": 1
+ },
+ "protocol": "anisette-v3 (v1 GET / compatible)",
+ "notes": "alive=false hoặc quá expires_at nghĩa là URL đã chết — đọc lại file này, đừng dùng URL cũ."
+}
