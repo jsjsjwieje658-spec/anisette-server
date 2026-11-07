@@ -1,0 +1,23 @@
+{
+ "updated_at": "2026-11-07T04:13:24Z",
+ "heartbeat_at": "2026-11-07T04:13:24Z",
+ "alive": true,
+ "run_id": "42334569842",
+ "url": "https://construct-fishing-followed-coating.trycloudflare.com",
+ "anisette_url": "https://construct-fishing-followed-coating.trycloudflare.com",
+ "expires_at": "2026-11-07T09:43:24Z",
+ "identity_mode": "windows",
+ "client_info": "<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
+ "user_agent": "akd/1.0 CFNetwork/1408.0.4 Darwin/22.5.0",
+ "device_id": "0DFC2E92-12C9-46E7-B164-8A0655610674",
+ "md_rinfo": "17106176",
+ "gsa": {
+  "verdict": "UNKNOWN",
+  "http": 403,
+  "ec": null,
+  "checked_at": "2026-11-07T04:13:24Z",
+  "attempts_used": 1
+ },
+ "protocol": "anisette-v3 (v1 GET / compatible)",
+ "notes": "alive=false hoặc quá expires_at nghĩa là URL đã chết — đọc lại file này, đừng dùng URL cũ."
+}
