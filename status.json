@@ -1,0 +1,23 @@
+{
+ "updated_at": "2026-11-14T12:42:22Z",
+ "heartbeat_at": "2026-11-14T12:42:22Z",
+ "alive": true,
+ "run_id": "43595847768",
+ "url": "https://phones-pts-paso-institutions.trycloudflare.com",
+ "anisette_url": "https://phones-pts-paso-institutions.trycloudflare.com",
+ "expires_at": "2026-11-14T18:12:22Z",
+ "identity_mode": "windows",
+ "client_info": "<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
+ "user_agent": "akd/1.0 CFNetwork/1408.0.4 Darwin/22.5.0",
+ "device_id": "BE34CBDE-4A2F-4772-818F-BC0F79EA14E1",
+ "md_rinfo": "17106176",
+ "gsa": {
+  "verdict": "UNKNOWN",
+  "http": 403,
+  "ec": null,
+  "checked_at": "2026-11-14T12:42:22Z",
+  "attempts_used": 1
+ },
+ "protocol": "anisette-v3 (v1 GET / compatible)",
+ "notes": "alive=false hoặc quá expires_at nghĩa là URL đã chết — đọc lại file này, đừng dùng URL cũ."
+}
