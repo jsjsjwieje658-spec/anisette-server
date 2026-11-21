@@ -1,6 +1,6 @@
 {
- "updated_at": "2026-11-21T07:49:47Z",
- "heartbeat_at": "2026-11-21T07:49:47Z",
+ "updated_at": "2026-11-21T08:04:53Z",
+ "heartbeat_at": "2026-11-21T08:04:53Z",
  "alive": true,
  "run_id": "44866991565",
  "url": "https://introduce-experiences-polo-mail.trycloudflare.com",
@@ -15,7 +15,7 @@
   "verdict": "UNKNOWN",
   "http": 403,
   "ec": null,
-  "checked_at": "2026-11-21T07:49:47Z",
+  "checked_at": "2026-11-21T08:04:53Z",
   "attempts_used": 1
  },
  "protocol": "anisette-v3 (v1 GET / compatible)",
