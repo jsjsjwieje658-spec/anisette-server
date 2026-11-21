@@ -1,0 +1,23 @@
+{
+ "updated_at": "2026-11-21T05:03:39Z",
+ "heartbeat_at": "2026-11-21T05:03:39Z",
+ "alive": true,
+ "run_id": "44866991565",
+ "url": "https://introduce-experiences-polo-mail.trycloudflare.com",
+ "anisette_url": "https://introduce-experiences-polo-mail.trycloudflare.com",
+ "expires_at": "2026-11-21T10:33:39Z",
+ "identity_mode": "windows",
+ "client_info": "<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
+ "user_agent": "akd/1.0 CFNetwork/1408.0.4 Darwin/22.5.0",
+ "device_id": "E6465E28-9AF9-46BD-A4A1-9C1A8F85EA47",
+ "md_rinfo": "17106176",
+ "gsa": {
+  "verdict": "UNKNOWN",
+  "http": 403,
+  "ec": null,
+  "checked_at": "2026-11-21T05:03:39Z",
+  "attempts_used": 1
+ },
+ "protocol": "anisette-v3 (v1 GET / compatible)",
+ "notes": "alive=false hoặc quá expires_at nghĩa là URL đã chết — đọc lại file này, đừng dùng URL cũ."
+}
